@@ -4,7 +4,7 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 
 
-@Entity(tableName = "transactions") // entity = database table
+@Entity(tableName = "transactions")
 data class Transaction(
     @PrimaryKey(autoGenerate = true)
     val id: Int = 0,
@@ -13,8 +13,13 @@ data class Transaction(
     val amount: Double,      // 5000.00
     val category: String,    // "Food", "Salary", "Rent"
     val date: Long,          // Timestamp
-    val type: String,         // "INCOME" or "EXPENSE"
-    val paymentMethod: String, // NEW: e.g., "Cash", "UPI", "Card"
+    val type: String,         // "INCOME", "EXPENSE", "TRANSFER"
+    val paymentMethod: String, // e.g., "Cash", "UPI" (Source for Transfer)
+    val toPaymentMethod: String? = null, // Destination for Transfer
     val reference: String? = null,
-    val needsReview: Boolean = true
+    val needsReview: Boolean = true,
+    val merchantSource: MerchantSource = MerchantSource.SENDER,
+    val allowLearning: Boolean = false,
+    val isAutoDetected: Boolean = false,
+    val description: String = ""
 )

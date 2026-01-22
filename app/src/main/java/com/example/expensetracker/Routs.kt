@@ -8,4 +8,22 @@ sealed class Routs {
 
     @Serializable
     data class AddEdit(val transactionId: Int = -1)
+
+    @Serializable
+    object Analytics
+
+    @Serializable
+    object PaymentMethods
+
+    @Serializable
+    object AutoLearned
+
+    @Serializable
+    object Categories
+
+    @Serializable
+    object RecurringPayments
+
+    @Serializable
+    object Dues
 }
