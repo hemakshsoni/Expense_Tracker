@@ -11,5 +11,6 @@ import androidx.room.PrimaryKey
 data class MerchantCategory(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val merchant: String,
-    val category: String
+    val category: String,
+    val keywords: String = ""
 )

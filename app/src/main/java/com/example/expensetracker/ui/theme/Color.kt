@@ -19,7 +19,7 @@ val SavingsBlue = Color(0xFF3B82F6) // Brighter Blue
 
 // Light Theme Neutrals
 val LightBackground = Color(0xFFFDFBFF)
-val LightSurface = Color(0xFFFDFBFF)
+val LightSurface = Color(0xFFEBEBF3)
 val LightOnSurface = Color(0xFF1A1C1E)
 val LightSurfaceVariant = Color(0xFFE0E2EC)
 val LightOnSurfaceVariant = Color(0xFF44474E)

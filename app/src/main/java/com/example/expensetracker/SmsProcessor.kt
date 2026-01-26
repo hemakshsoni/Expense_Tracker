@@ -23,11 +23,11 @@ class SmsProcessor(
 
     suspend fun process(rawSms: RawSms) {
         val lower = rawSms.body.lowercase()
-        
+
         // Refined security check: block actual OTP messages but allow transactions that contain security warnings in the footer
         val securityKeywords = Regex("\\b(otp|verification|verification code|security code|secret code|auth code|login code|auth status)\\b")
         val transactionKeywords = Regex("\\b(debited|credited|spent|paid|sent|received|purchase|withdraw|refund|reversed|\\bdr\\b|\\bcr\\b)\\b")
-        
+
         if (lower.contains(securityKeywords) && !lower.contains(transactionKeywords)) {
             Log.d("SMS_DEBUG", "Filtered out security/OTP message")
             return
@@ -93,15 +93,13 @@ class SmsProcessor(
         }
 
         // --- AMOUNT EXTRACTION ---
-        // Handles "Rs.100", "₹ 100", "debited by 100", "spent 100", etc.
         val amountRegex = Regex("(?i)(?:rs\\.?|inr|₹|amt|amount)\\s*([0-9]+(?:\\.[0-9]{1,2})?)")
         val amountMatch = amountRegex.find(lower)
             ?: Regex("(?i)(?:debited|credited|spent|paid|sent|received|amt|amount)\\s+(?:by|with|to|of)?\\s*([0-9]+(?:\\.[0-9]{1,2})?)").find(lower)
-        
+
         val amount = amountMatch?.groupValues?.get(1)?.toDoubleOrNull() ?: return null
 
         // --- TYPE DETECTION ---
-        // Strip the balance part for type detection to avoid picking up balance indicators like "Bal: Rs. 100 CR"
         val sanitizedForType = lower.replace(Regex("(?i)(total bal|avl bal|available balance|clr bal|balance|clr bal|clear bal).*"), "")
 
         val isExpense = sanitizedForType.contains(Regex("(?i)(debited|spent|paid|sent|withdraw|purchase|\\bdr\\b|\\bdr\\.)"))
@@ -134,7 +132,7 @@ class SmsProcessor(
         // --- REFERENCE ---
         val refRegex = Regex("(?i)(?:utr|rrn|ref\\s?no|ref|txn\\s?id|upi\\s?ref|refno\\s)[:\\-\\s]*([a-z0-9]{6,})\\b")
         val reference = refRegex.find(message)?.groupValues?.get(1)
-                ?: "SMS_${hash("$sender|$amount|$timestamp")}"
+            ?: "SMS_${hash("$sender|$amount|$timestamp")}"
 
         return ParsedTransaction(
             amount = amount,
@@ -196,6 +194,11 @@ class SmsProcessor(
         return md.digest(input.toByteArray()).take(4).joinToString("") { "%02x".format(it) }
     }
 
+    // --- FIX 1: Add the normalization helper ---
+    private fun normalizeMerchant(merchant: String): String {
+        return merchant.trim().lowercase()
+    }
+
     private suspend fun saveTransaction(parsed: ParsedTransaction, sender: String) {
         val db = TransactionDatabase.getDatabase(context)
 
@@ -214,37 +217,51 @@ class SmsProcessor(
 
         // 🏦 2. Get all user-defined payment methods
         val allMethods = db.paymentMethodDao.getAllPaymentMethods().first()
-        
-        // 🏦 3. Matching Strategy:
-        // Priority 1: Exact or contains match with user's accounts (e.g., "SBI" matches "SBI Bank")
-        // Priority 2: Fallback to the transaction type detected in message (e.g., "UPI")
+
+        // 🏦 3. Matching Strategy
         val matchedAccount = allMethods.find { method ->
             val mName = method.name.uppercase()
             mName.contains(extractedBank) || extractedBank.contains(mName) ||
-            mName.replace("BANK", "").contains(extractedBank)
+                    mName.replace("BANK", "").contains(extractedBank)
         }
 
         val finalPaymentMethod = matchedAccount?.name ?: parsed.paymentMethod
 
-        // 🔥 NEW: Check for auto-learned category
+        // 🔥 FIX 2: Use normalizeMerchant() to match DB keys
         val learnedCategory = db.merchantCategoryDao().getCategoryForMerchant(normalizeMerchant(parsed.merchant))
-        val finalCategory = learnedCategory ?: "Other"
-        val needsReview = learnedCategory == null
+
+
+        val allMappings = db.merchantCategoryDao().getAllMappings().first()
+        val normalizedRawMerchant = normalizeMerchant(parsed.merchant)
+
+        val matchedRule = allMappings.find { rule ->
+            val keywords = rule.keywords.split(",").map { it.trim().lowercase() }
+            val mainName = rule.merchant.trim().lowercase()
+            mainName == normalizedRawMerchant || keywords.contains(normalizedRawMerchant)
+        }
+
+        // If rule found, use its Display Name ("Amazon") and Category ("Shopping")
+        // If not, keep original Raw Name ("AMZN") and "Other"
+        val finalTitle = matchedRule?.merchant ?: parsed.merchant
+        val finalCategory = matchedRule?.category ?: "Other"
+        val needsReview = matchedRule == null
+
+
 
         val txn = Transaction(
-            title = parsed.merchant,
+            title = finalTitle, // Uses the pretty name now!
             amount = parsed.amount,
             type = parsed.type,
             category = finalCategory,
             paymentMethod = finalPaymentMethod,
             date = parsed.date,
             reference = parsed.reference,
-            needsReview = needsReview, // ✅ Automatically review if category is already learned
+            needsReview = needsReview,
             merchantSource = parsed.merchantSource,
             isAutoDetected = true
         )
 
         db.transactionDao.upsertTransaction(txn)
-        Log.d("SMS_DEBUG", "Saved transaction: ${txn.title} [${txn.type}] via $finalPaymentMethod")
+        Log.d("SMS_DEBUG", "Saved transaction: ${txn.title} [${txn.type}] via $finalPaymentMethod. Category: $finalCategory")
     }
 }

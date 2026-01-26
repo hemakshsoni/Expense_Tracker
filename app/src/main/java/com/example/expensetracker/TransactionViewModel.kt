@@ -3,7 +3,6 @@ package com.example.expensetracker
 import TransactionSortOption
 import TransactionTypeFilter
 import android.content.Context
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
@@ -32,8 +31,28 @@ class TransactionViewModel(
     private val categoryDao: CategoryDao,
     private val recurringPaymentDao: RecurringPaymentDao,
     private val dueDao: DueDao,
-    private val duePaymentDao: DuePaymentDao
+    private val duePaymentDao: DuePaymentDao,
+    private val userPreferences: UserPreferences
 ) : ViewModel() {
+
+    // 1. Expose the setup state
+    val isSetupComplete = userPreferences.isSetupComplete
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null) // null means "loading"
+
+    var userName = userPreferences.userName
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "User")
+    fun updateUserName(newName: String) {
+        viewModelScope.launch {
+            userPreferences.saveUserName(newName)
+        }
+    }
+    // 2. Function to mark setup as done
+    fun completeSetup(name: String) {
+        viewModelScope.launch {
+            userPreferences.saveUserName(name) // Save name
+            userPreferences.setSetupComplete() // Mark setup done
+        }
+    }
 
     val allTransactions: StateFlow<List<Transaction>> = dao.getAllTransactions()
         .stateIn(
@@ -56,6 +75,63 @@ class TransactionViewModel(
             initialValue = emptyList()
         )
 
+
+    // The Fixed Flow
+    val weeklySpending: Flow<List<Float>> = flow {
+        // 1. Precise "Start of Week" Calculation (Monday 00:00:00)
+        val calendar = Calendar.getInstance()
+        // Remove default locale ambiguity
+        calendar.firstDayOfWeek = Calendar.MONDAY
+
+        // Reset to current time, then strip time components
+        val now = System.currentTimeMillis()
+        calendar.timeInMillis = now
+        calendar.set(Calendar.HOUR_OF_DAY, 0)
+        calendar.set(Calendar.MINUTE, 0)
+        calendar.set(Calendar.SECOND, 0)
+        calendar.set(Calendar.MILLISECOND, 0)
+
+        // Calculate how far back Monday was
+        val dayOfWeek = calendar.get(Calendar.DAY_OF_WEEK)
+        val daysToSubtract = if (dayOfWeek == Calendar.SUNDAY) {
+            6 // Sunday is 6 days after Monday
+        } else {
+            dayOfWeek - Calendar.MONDAY // e.g., Tue(3) - Mon(2) = 1 day back
+        }
+        calendar.add(Calendar.DAY_OF_YEAR, -daysToSubtract)
+
+        val startOfWeek = calendar.timeInMillis
+
+        // 2. Fetch & Map Data
+        dao.getTransactionsAfter(startOfWeek).collect { transactions ->
+            val weekData = FloatArray(7) { 0f } // 0=Mon, 1=Tue, ... 6=Sun
+
+            transactions.forEach { txn ->
+                // Calculate difference in days from Monday
+                val diffInMillis = txn.date - startOfWeek
+
+                // Integer division works perfectly here for 0-6 index
+                val dayIndex = (diffInMillis / (24 * 60 * 60 * 1000)).toInt()
+
+                // Net amount calculation
+                val amount = (if (txn.type.equals(
+                        "Expense",
+                        ignoreCase = true
+                    )
+                ) -txn.amount else if (txn.type.equals(
+                        "Income",
+                        ignoreCase = true
+                    )
+                ) txn.amount else 0).toFloat()
+
+                if (dayIndex in 0..6) {
+                    weekData[dayIndex] += amount
+                }
+            }
+            emit(weekData.toList())
+        }
+    }
+
     val allCategories: StateFlow<List<Category>> = categoryDao.getAllCategories()
         .stateIn(
             scope = viewModelScope,
@@ -68,12 +144,13 @@ class TransactionViewModel(
         list.associate { it.name to it.iconName }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
-    val autoLearnedMappings: StateFlow<List<MerchantCategory>> = merchantCategoryDao.getAllMappings()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyList()
-        )
+    val autoLearnedMappings: StateFlow<List<MerchantCategory>> =
+        merchantCategoryDao.getAllMappings()
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5000),
+                initialValue = emptyList()
+            )
 
     val allRecurringPayments = recurringPaymentDao.getAllRecurringPayments()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -89,104 +166,143 @@ class TransactionViewModel(
 
     fun getPaymentsForDue(dueId: Int) = duePaymentDao.getPaymentsForDue(dueId)
 
-    val paymentMethodBalances: StateFlow<Map<PaymentMethod, Double>> = combine(allTransactions, allPaymentMethods) { transactions, methods ->
-        methods.associateWith { method ->
-            val income = transactions
-                .filter { it.paymentMethod == method.name && it.type.equals("Income", ignoreCase = true) }
-                .sumOf { it.amount }
-            val expense = transactions
-                .filter { it.paymentMethod == method.name && it.type.equals("Expense", ignoreCase = true) }
-                .sumOf { it.amount }
-            
-            // Transfers out of this method
-            val transferOut = transactions
-                .filter { it.paymentMethod == method.name && it.type.equals("TRANSFER", ignoreCase = true) }
-                .sumOf { it.amount }
-            
-            // Transfers into this method
-            val transferIn = transactions
-                .filter { it.toPaymentMethod == method.name && it.type.equals("TRANSFER", ignoreCase = true) }
-                .sumOf { it.amount }
+    val paymentMethodBalances: StateFlow<Map<PaymentMethod, Double>> =
+        combine(allTransactions, allPaymentMethods) { transactions, methods ->
+            methods.associateWith { method ->
+                val income = transactions
+                    .filter {
+                        it.paymentMethod == method.name && it.type.equals(
+                            "Income",
+                            ignoreCase = true
+                        )
+                    }
+                    .sumOf { it.amount }
+                val expense = transactions
+                    .filter {
+                        it.paymentMethod == method.name && it.type.equals(
+                            "Expense",
+                            ignoreCase = true
+                        )
+                    }
+                    .sumOf { it.amount }
 
-            method.initialBalance + income - expense - transferOut + transferIn
-        }
-    }
-    .flowOn(Dispatchers.Default)
-    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+                // Transfers out of this method
+                val transferOut = transactions
+                    .filter {
+                        it.paymentMethod == method.name && it.type.equals(
+                            "TRANSFER",
+                            ignoreCase = true
+                        )
+                    }
+                    .sumOf { it.amount }
 
-    val paymentMethodSpending: StateFlow<Map<PaymentMethod, Double>> = combine(allTransactions, allPaymentMethods) { transactions, methods ->
-        methods.associateWith { method ->
-            transactions
-                .filter { it.paymentMethod == method.name && it.type.equals("Expense", ignoreCase = true) }
-                .sumOf { it.amount }
+                // Transfers into this method
+                val transferIn = transactions
+                    .filter {
+                        it.toPaymentMethod == method.name && it.type.equals(
+                            "TRANSFER",
+                            ignoreCase = true
+                        )
+                    }
+                    .sumOf { it.amount }
+
+                method.initialBalance + income - expense - transferOut + transferIn
+            }
         }
-    }
-    .flowOn(Dispatchers.Default)
-    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+            .flowOn(Dispatchers.Default)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    val paymentMethodSpending: StateFlow<Map<PaymentMethod, Double>> =
+        combine(allTransactions, allPaymentMethods) { transactions, methods ->
+            methods.associateWith { method ->
+                transactions
+                    .filter {
+                        it.paymentMethod == method.name && it.type.equals(
+                            "Expense",
+                            ignoreCase = true
+                        )
+                    }
+                    .sumOf { it.amount }
+            }
+        }
+            .flowOn(Dispatchers.Default)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
 
     val totalBalance: StateFlow<Double> = allTransactions.map { list ->
         val income = list.filter { it.type.equals("Income", ignoreCase = true) }.sumOf { it.amount }
-        val expense = list.filter { it.type.equals("Expense", ignoreCase = true) }.sumOf { it.amount }
+        val expense =
+            list.filter { it.type.equals("Expense", ignoreCase = true) }.sumOf { it.amount }
         income - expense
     }
-    .flowOn(Dispatchers.Default)
-    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
 
     val totalIncome: StateFlow<Double> = allTransactions.map { list ->
         list.filter { it.type.equals("Income", ignoreCase = true) }.sumOf { it.amount }
     }
-    .flowOn(Dispatchers.Default)
-    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
 
     val totalExpense: StateFlow<Double> = allTransactions.map { list ->
         list.filter { it.type.equals("Expense", ignoreCase = true) }.sumOf { it.amount }
     }
-    .flowOn(Dispatchers.Default)
-    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
 
-    init {
-        checkAndProcessRecurringPayments()
-    }
 
     private fun checkAndProcessRecurringPayments() {
         viewModelScope.launch(Dispatchers.IO) {
-            val activePayments = recurringPaymentDao.getActiveRecurringPayments()
+
             val now = System.currentTimeMillis()
-            
-            activePayments.forEach { payment ->
-                var currentNextDate = payment.nextDate
-                val processedTransactions = mutableListOf<Transaction>()
-                
-                while (currentNextDate <= now) {
-                    processedTransactions.add(
-                        Transaction(
-                            title = payment.title,
-                            amount = payment.amount,
-                            category = payment.category,
-                            date = currentNextDate,
-                            type = "Expense",
-                            paymentMethod = payment.paymentMethod,
-                            needsReview = false,
-                            isAutoDetected = true,
-                            description = "Recurring Payment: ${payment.frequency}"
+
+            allRecurringPayments.collect { activePaymentsList ->
+
+                activePaymentsList.forEach { payment ->
+
+                    var currentNextDate = payment.nextDate
+                    val processedTransactions = mutableListOf<Transaction>()
+
+                    while (currentNextDate <= now) {
+
+                        processedTransactions.add(
+                            Transaction(
+                                title = payment.title,
+                                amount = payment.amount,
+                                category = payment.category,
+                                date = currentNextDate,
+                                type = "Expense",
+                                paymentMethod = payment.paymentMethod,
+                                needsReview = false,
+                                isAutoDetected = true,
+                                description = "Recurring Payment: ${payment.frequency}"
+                            )
                         )
-                    )
-                    currentNextDate = calculateNextOccurrence(currentNextDate, payment.frequency)
-                }
-                
-                if (processedTransactions.isNotEmpty()) {
-                    processedTransactions.forEach { dao.upsertTransaction(it) }
-                    recurringPaymentDao.upsertRecurringPayment(
-                        payment.copy(
-                            nextDate = currentNextDate,
-                            lastProcessed = now
+
+                        currentNextDate =
+                            calculateNextOccurrence(currentNextDate, payment.frequency)
+                    }
+
+                    if (processedTransactions.isNotEmpty()) {
+
+                        // Insert all transactions
+                        processedTransactions.forEach {
+                            dao.upsertTransaction(it)
+                        }
+
+                        // Update recurring payment
+                        recurringPaymentDao.upsertRecurringPayment(
+                            payment.copy(
+                                nextDate = currentNextDate,
+                                lastProcessed = now
+                            )
                         )
-                    )
+                    }
                 }
             }
         }
     }
+
 
     private fun calculateNextOccurrence(currentDate: Long, frequency: String): Long {
         val cal = Calendar.getInstance()
@@ -201,17 +317,39 @@ class TransactionViewModel(
     }
 
     fun upsertTransaction(transaction: Transaction) {
-        viewModelScope.launch { 
+        viewModelScope.launch {
+            // 1. Save the specific transaction you just edited
             dao.upsertTransaction(transaction)
-            
-            // 🔥 CRITICAL: Handle learning when saving a reviewed transaction
-            if (transaction.allowLearning && transaction.merchantSource == MerchantSource.BODY) {
+
+            // 2. If we are learning a new rule, apply it to OTHER pending transactions
+            if (transaction.allowLearning && transaction.title.isNotBlank()) {
+                val normalizedTitle = transaction.title.trim().lowercase()
+
+                // A. Save the rule to the database
                 merchantCategoryDao.insertMapping(
                     MerchantCategory(
-                        merchant = normalizeMerchant(transaction.title),
+                        merchant = normalizedTitle,
                         category = transaction.category
                     )
                 )
+
+                // B. BULK UPDATE: Find other transactions waiting for review with the same name
+                // We use the existing 'reviewTransactions' list to find matches instantly
+                val pendingMatches = reviewTransactions.value.filter {
+                    it.title.trim().lowercase() == normalizedTitle && it.id != transaction.id
+                }
+
+                if (pendingMatches.isNotEmpty()) {
+                    pendingMatches.forEach { match ->
+                        dao.upsertTransaction(
+                            match.copy(
+                                category = transaction.category, // Apply the new category
+                                needsReview = false,             // Mark as reviewed
+                                isAutoDetected = true            // Mark as auto-fixed
+                            )
+                        )
+                    }
+                }
             }
         }
     }
@@ -254,20 +392,12 @@ class TransactionViewModel(
         }
     }
 
-    fun updateCategoryOrder(categories: List<Category>) {
-        viewModelScope.launch {
-            categoryDao.upsertCategories(categories.mapIndexed { index, category -> 
-                category.copy(order = index) 
-            })
-        }
-    }
-
     fun deleteCategory(category: Category) {
         viewModelScope.launch { categoryDao.deleteCategory(category) }
     }
 
     fun upsertRecurringPayment(payment: RecurringPayment) {
-        viewModelScope.launch { 
+        viewModelScope.launch {
             recurringPaymentDao.upsertRecurringPayment(payment)
             checkAndProcessRecurringPayments()
         }
@@ -278,7 +408,7 @@ class TransactionViewModel(
     }
 
     fun upsertDue(due: Due, additionalPaymentAmount: Double = 0.0) {
-        viewModelScope.launch { 
+        viewModelScope.launch {
             dueDao.upsertDue(due)
             if (additionalPaymentAmount > 0) {
                 duePaymentDao.insertPayment(
@@ -296,8 +426,58 @@ class TransactionViewModel(
         viewModelScope.launch { dueDao.deleteDue(due) }
     }
 
+    // 1. UPDATE: Smarter lookup that checks keywords
+    suspend fun findAutoCategory(rawTitle: String): MerchantCategory? {
+        val normalizedInput = rawTitle.trim().lowercase()
+        val allMappings = merchantCategoryDao.getAllMappings().first() // Fetch all rules
+
+        // Find the first rule where the input matches the name OR exists in the keyword list
+        return allMappings.find { rule ->
+            val keywordsList = rule.keywords.split(",").map { it.trim().lowercase() }
+            val mainName = rule.merchant.trim().lowercase()
+
+            // Match if input is exactly the main name OR is one of the keywords
+            mainName == normalizedInput || keywordsList.contains(normalizedInput)
+        }
+    }
+
+    // 2. UPDATE: Save Logic to handle keywords
     fun upsertAutoLearnedMapping(mapping: MerchantCategory) {
-        viewModelScope.launch { merchantCategoryDao.insertMapping(mapping) }
+        viewModelScope.launch {
+            // Normalize: Ensure main merchant name and keywords are clean
+            val cleanKeywords = mapping.keywords.split(",")
+                .map { it.trim().lowercase() }
+                .filter { it.isNotEmpty() }
+                .joinToString(",")
+
+            val normalizedMapping = mapping.copy(
+                merchant = mapping.merchant.trim(), // Keep display casing (e.g. "Amazon")
+                keywords = cleanKeywords
+            )
+
+            merchantCategoryDao.insertMapping(normalizedMapping)
+
+            // BULK UPDATE: Check existing reviews against ALL keywords
+            val keywordsToCheck = cleanKeywords.split(",") + normalizedMapping.merchant.lowercase()
+
+            val pendingMatches = reviewTransactions.value.filter { txn ->
+                val txnTitle = txn.title.trim().lowercase()
+                keywordsToCheck.any { keyword -> txnTitle == keyword || txnTitle.contains(keyword) }
+            }
+
+            if (pendingMatches.isNotEmpty()) {
+                pendingMatches.forEach { match ->
+                    dao.upsertTransaction(
+                        match.copy(
+                            title = normalizedMapping.merchant, // Update to Display Name (e.g. "AMZN" -> "Amazon")
+                            category = normalizedMapping.category,
+                            needsReview = false,
+                            isAutoDetected = true
+                        )
+                    )
+                }
+            }
+        }
     }
 
     fun deleteAutoLearnedMapping(mapping: MerchantCategory) {
@@ -335,12 +515,6 @@ class TransactionViewModel(
         }
     }
 
-    fun learnMerchantCategoryIfNeeded(
-        oldTransaction: Transaction,
-        updatedTransaction: Transaction
-    ) {
-        // Obsolete: Integrated directly into upsertTransaction
-    }
 
     private val _analyticsTimeframe = MutableStateFlow(AnalyticsTimeframe.MONTHLY)
     val analyticsTimeframe = _analyticsTimeframe.asStateFlow()
@@ -349,7 +523,7 @@ class TransactionViewModel(
         _analyticsTimeframe.value = timeframe
     }
 
-    val statsData: StateFlow<Map<String, MonthlyStatsData>> = 
+    val statsData: StateFlow<Map<String, MonthlyStatsData>> =
         combine(allTransactions, analyticsTimeframe) { transactions, timeframe ->
             transactions.groupBy {
                 val cal = Calendar.getInstance()
@@ -360,33 +534,36 @@ class TransactionViewModel(
                         val month = cal.get(Calendar.MONTH) + 1
                         "$year-${String.format("%02d", month)}"
                     }
+
                     AnalyticsTimeframe.YEARLY -> {
                         cal.get(Calendar.YEAR).toString()
                     }
                 }
             }.mapValues { entry ->
-                val income = entry.value.filter { it.type.equals("Income", ignoreCase = true) }.sumOf { it.amount }
-                val expense = entry.value.filter { it.type.equals("Expense", ignoreCase = true) }.sumOf { it.amount }
-                
-                val catBreakdown = entry.value.filter { it.type.equals("Expense", ignoreCase = true) }
-                    .groupBy { it.category }
-                    .mapValues { catEntry -> catEntry.value.sumOf { it.amount } }
-                
-                val pmBreakdown = entry.value.filter { it.type.equals("Expense", ignoreCase = true) }
-                    .groupBy { it.paymentMethod }
-                    .mapValues { pmEntry -> pmEntry.value.sumOf { it.amount } }
-                
+                val income = entry.value.filter { it.type.equals("Income", ignoreCase = true) }
+                    .sumOf { it.amount }
+                val expense = entry.value.filter { it.type.equals("Expense", ignoreCase = true) }
+                    .sumOf { it.amount }
+
+                val catBreakdown =
+                    entry.value.filter { it.type.equals("Expense", ignoreCase = true) }
+                        .groupBy { it.category }
+                        .mapValues { catEntry -> catEntry.value.sumOf { it.amount } }
+
+                val pmBreakdown =
+                    entry.value.filter { it.type.equals("Expense", ignoreCase = true) }
+                        .groupBy { it.paymentMethod }
+                        .mapValues { pmEntry -> pmEntry.value.sumOf { it.amount } }
+
                 MonthlyStatsData(income, expense, catBreakdown, pmBreakdown)
             }
         }
-        .flowOn(Dispatchers.Default)
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyMap()
-        )
-
-    val monthlyStats = statsData // For backward compatibility if needed
+            .flowOn(Dispatchers.Default)
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5000),
+                initialValue = emptyMap()
+            )
 
     private val _typeFilter = MutableStateFlow(TransactionTypeFilter.ALL)
     val typeFilter = _typeFilter.asStateFlow()
@@ -400,9 +577,14 @@ class TransactionViewModel(
     private val _paymentMethodFilters = MutableStateFlow<Set<String>>(emptySet())
     val paymentMethodFilters = _paymentMethodFilters.asStateFlow()
 
-    fun setTypeFilter(filter: TransactionTypeFilter) { _typeFilter.value = filter }
-    fun setSortOption(option: TransactionSortOption) { _sortOption.value = option }
-    
+    fun setTypeFilter(filter: TransactionTypeFilter) {
+        _typeFilter.value = filter
+    }
+
+    fun setSortOption(option: TransactionSortOption) {
+        _sortOption.value = option
+    }
+
     fun toggleCategoryFilter(category: String) {
         _categoryFilters.value = if (_categoryFilters.value.contains(category)) {
             _categoryFilters.value - category
@@ -410,8 +592,10 @@ class TransactionViewModel(
             _categoryFilters.value + category
         }
     }
-    
-    fun clearCategoryFilters() { _categoryFilters.value = emptySet() }
+
+    fun clearCategoryFilters() {
+        _categoryFilters.value = emptySet()
+    }
 
     fun togglePaymentMethodFilter(method: String) {
         _paymentMethodFilters.value = if (_paymentMethodFilters.value.contains(method)) {
@@ -420,21 +604,36 @@ class TransactionViewModel(
             _paymentMethodFilters.value + method
         }
     }
-    
-    fun clearPaymentMethodFilters() { _paymentMethodFilters.value = emptySet() }
+
+    fun clearPaymentMethodFilters() {
+        _paymentMethodFilters.value = emptySet()
+    }
 
     val filteredSortedTransactions: StateFlow<List<Transaction>> =
-        combine(allTransactions, typeFilter, sortOption, categoryFilters, paymentMethodFilters) {
-                transactions, typeF, sort, catFs, methodFs ->
+        combine(
+            allTransactions,
+            typeFilter,
+            sortOption,
+            categoryFilters,
+            paymentMethodFilters
+        ) { transactions, typeF, sort, catFs, methodFs ->
             var result = when (typeF) {
                 TransactionTypeFilter.ALL -> transactions
-                TransactionTypeFilter.INCOME -> transactions.filter { it.type.trim().equals("Income", ignoreCase = true) }
-                TransactionTypeFilter.EXPENSE -> transactions.filter { it.type.trim().equals("Expense", ignoreCase = true) }
-                TransactionTypeFilter.TRANSFER -> transactions.filter { it.type.trim().equals("TRANSFER", ignoreCase = true) }
+                TransactionTypeFilter.INCOME -> transactions.filter {
+                    it.type.trim().equals("Income", ignoreCase = true)
+                }
+
+                TransactionTypeFilter.EXPENSE -> transactions.filter {
+                    it.type.trim().equals("Expense", ignoreCase = true)
+                }
+
+                TransactionTypeFilter.TRANSFER -> transactions.filter {
+                    it.type.trim().equals("TRANSFER", ignoreCase = true)
+                }
             }
             if (catFs.isNotEmpty()) result = result.filter { it.category in catFs }
             if (methodFs.isNotEmpty()) result = result.filter { it.paymentMethod in methodFs }
-            
+
             result = when (sort) {
                 TransactionSortOption.DATE_DESC -> result.sortedByDescending { it.date }
                 TransactionSortOption.DATE_ASC -> result.sortedBy { it.date }
@@ -443,8 +642,8 @@ class TransactionViewModel(
             }
             result
         }
-        .flowOn(Dispatchers.Default)
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+            .flowOn(Dispatchers.Default)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     companion object {
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
@@ -452,6 +651,7 @@ class TransactionViewModel(
             override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {
                 val application = checkNotNull(extras[APPLICATION_KEY])
                 val database = (application as ExpenseApp).database
+                val userPrefs = UserPreferences(application.applicationContext)
                 return TransactionViewModel(
                     database.transactionDao,
                     database.merchantCategoryDao(),
@@ -459,7 +659,8 @@ class TransactionViewModel(
                     database.categoryDao,
                     database.recurringPaymentDao,
                     database.dueDao,
-                    database.duePaymentDao
+                    database.duePaymentDao,
+                    userPreferences = userPrefs
                 ) as T
             }
         }

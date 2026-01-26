@@ -21,11 +21,13 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE type = 'INCOME' ORDER BY date DESC")
     fun getOnlyIncomes(): Flow<List<Transaction>>
 
-    @Query("""
+    @Query(
+        """
         SELECT 
             (SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'INCOME') - 
             (SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'EXPENSE')
-    """)
+    """
+    )
     fun getTotalBalance(): Flow<Double>
 
     @Query("SELECT * FROM transactions WHERE needsReview = 1 ORDER BY date DESC")
@@ -43,7 +45,8 @@ interface TransactionDao {
     @Query("UPDATE transactions SET category = :newName WHERE category = :oldName")
     suspend fun updateCategoryNameInTransactions(oldName: String, newName: String)
 
-    @Query("""
+    @Query(
+        """
     SELECT EXISTS(
         SELECT 1 FROM transactions
         WHERE 
@@ -55,7 +58,8 @@ interface TransactionDao {
                 AND date >= :sinceTime
             )
     )
-""")
+"""
+    )
     suspend fun existsDuplicate(
         reference: String,
         amount: Double,
@@ -65,5 +69,7 @@ interface TransactionDao {
     ): Boolean
 
 
+    @Query("SELECT * FROM transactions WHERE date >= :startDate")
+    fun getTransactionsAfter(startDate: Long): Flow<List<Transaction>>
 
 }

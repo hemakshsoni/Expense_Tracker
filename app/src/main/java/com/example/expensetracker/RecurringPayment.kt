@@ -12,6 +12,5 @@ data class RecurringPayment(
     val paymentMethod: String,
     val frequency: String, // "Daily", "Weekly", "Monthly", "Yearly"
     val nextDate: Long,    // Timestamp for next occurrence
-    val lastProcessed: Long? = null,
-    val isActive: Boolean = true
+    val lastProcessed: Long? = null
 )
