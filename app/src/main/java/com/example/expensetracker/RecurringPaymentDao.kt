@@ -14,6 +14,4 @@ interface RecurringPaymentDao {
     @Delete
     suspend fun deleteRecurringPayment(recurringPayment: RecurringPayment)
 
-    @Query("SELECT * FROM recurring_payments WHERE isActive = 1")
-    suspend fun getActiveRecurringPayments(): List<RecurringPayment>
 }

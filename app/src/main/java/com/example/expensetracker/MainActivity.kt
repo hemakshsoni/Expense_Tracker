@@ -7,6 +7,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 
@@ -31,10 +36,20 @@ class MainActivity : ComponentActivity() {
         if (permissionsToRequest.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, permissionsToRequest.toTypedArray(), 101)
         }
-        
         setContent {
             com.example.expensetracker.ui.theme.ExpenseTrackerTheme {
-                AppNavigation(viewModel = viewModel)
+                val isSetupComplete by viewModel.isSetupComplete.collectAsState()
+                if (isSetupComplete == null) {
+                    Box(Modifier.fillMaxSize()) // Or a specific SplashScreen composable
+                } else {
+                    // Decide where to start
+                    val startDest = if (isSetupComplete == true) Routs.Home else Routs.Setup
+
+                    AppNavigation(
+                        viewModel = viewModel,
+                        startDestination = startDest
+                    )
+                }
             }
         }
     }

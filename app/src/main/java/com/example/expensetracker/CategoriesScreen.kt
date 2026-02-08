@@ -12,7 +12,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,77 +20,90 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CategoriesScreen(
     viewModel: TransactionViewModel,
     onDeleteCategory: (Category) -> Unit
 ) {
     val categories by viewModel.allCategories.collectAsState()
-    var showAddDialog by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    
+    var showAddEditSheet by remember { mutableStateOf(false) }
     var editingCategory by remember { mutableStateOf<Category?>(null) }
 
     val listState = rememberLazyListState()
 
     Box(modifier = Modifier.fillMaxSize()) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            item {
-                Text(
-                    "Manage Categories",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
+        Column(modifier = Modifier.fillMaxSize()) {
+            Text(
+                "Manage Categories",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(all = 16.dp)
+            )
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(categories, key = { it.id }) { category ->
+                    CategoryItemCard(
+                        category = category,
+                        onEdit = { 
+                            editingCategory = category
+                            showAddEditSheet = true
+                        },
+                        onDelete = { onDeleteCategory(category) }
+                    )
+                }
+                item { Spacer(modifier = Modifier.height(100.dp)) }
             }
-
-            items(categories, key = { it.id }) { category ->
-                CategoryItemCard(
-                    category = category,
-                    onEdit = { editingCategory = category },
-                    onDelete = { onDeleteCategory(category) }
-                )
-            }
-            
-            item { Spacer(modifier = Modifier.height(80.dp)) }
         }
 
         ExtendedFloatingActionButton(
-            onClick = { showAddDialog = true },
+            onClick = { 
+                editingCategory = null
+                showAddEditSheet = true 
+            },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
+                .padding(bottom = 20.dp)
                 .padding(24.dp),
             icon = { Icon(Icons.Default.Add, null) },
             text = { Text("Add Category") },
             containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = Color.White
+            contentColor = MaterialTheme.colorScheme.onPrimary
         )
 
-        if (showAddDialog) {
-            AddEditCategoryDialog(
-                onDismiss = { showAddDialog = false },
-                onConfirm = { name, iconName ->
-                    viewModel.upsertCategory(Category(name = name, iconName = iconName))
-                    showAddDialog = false
-                }
-            )
-        }
-
-        if (editingCategory != null) {
-            AddEditCategoryDialog(
-                initialCategory = editingCategory,
-                onDismiss = { editingCategory = null },
-                onConfirm = { name, iconName ->
-                    viewModel.upsertCategory(editingCategory!!.copy(name = name, iconName = iconName))
-                    editingCategory = null
-                }
-            )
+        if (showAddEditSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showAddEditSheet = false },
+                sheetState = sheetState,
+                dragHandle = { BottomSheetDefaults.DragHandle() }
+            ) {
+                AddEditCategorySheet(
+                    initialCategory = editingCategory,
+                    onDismiss = {
+                        scope.launch { sheetState.hide() }.invokeOnCompletion {
+                            showAddEditSheet = false
+                        }
+                    },
+                    onConfirm = { name, iconName ->
+                        if (editingCategory != null) {
+                            viewModel.upsertCategory(editingCategory!!.copy(name = name, iconName = iconName))
+                        } else {
+                            viewModel.upsertCategory(Category(name = name, iconName = iconName))
+                        }
+                    }
+                )
+            }
         }
     }
 }
@@ -146,7 +158,7 @@ fun CategoryItemCard(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AddEditCategoryDialog(
+fun AddEditCategorySheet(
     initialCategory: Category? = null,
     onDismiss: () -> Unit,
     onConfirm: (String, String) -> Unit
@@ -155,96 +167,113 @@ fun AddEditCategoryDialog(
     var selectedIconName by remember { mutableStateOf(initialCategory?.iconName ?: "Category") }
     var showIconPicker by remember { mutableStateOf(false) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (initialCategory == null) "Add Category" else "Edit Category") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Category Name") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp)
+            .padding(bottom = 48.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Text(
+            text = if (initialCategory == null) "New Category" else "Edit Category",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showIconPicker = true }
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
-                        .padding(12.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = IconUtils.getIcon(selectedIconName),
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text("Select Icon", style = MaterialTheme.typography.bodyLarge)
-                    Spacer(modifier = Modifier.weight(1f))
-                    Icon(Icons.Default.ChevronRight, null, tint = Color.Gray)
-                }
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("Category Name") },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { showIconPicker = true }
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                .padding(16.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = IconUtils.getIcon(selectedIconName),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
             }
-        },
-        confirmButton = {
-            Button(onClick = { if (name.isNotBlank()) onConfirm(name, selectedIconName) }) {
-                Text("Save")
+            Spacer(modifier = Modifier.width(16.dp))
+            Column {
+                Text("Icon", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Text(selectedIconName, style = MaterialTheme.typography.bodyLarge)
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            Spacer(modifier = Modifier.weight(1f))
+            Icon(Icons.Default.ChevronRight, null, tint = Color.Gray)
         }
-    )
+
+        Button(
+            onClick = {
+                if (name.isNotBlank()) {
+                    onConfirm(name, selectedIconName)
+                    onDismiss()
+                }
+            },
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Text("Save Category", fontWeight = FontWeight.Bold)
+        }
+    }
 
     if (showIconPicker) {
-        AlertDialog(
+        ModalBottomSheet(
             onDismissRequest = { showIconPicker = false },
-            title = { Text("Choose Icon") },
-            text = {
-                Box(modifier = Modifier.height(300.dp)) {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(4),
-                        contentPadding = PaddingValues(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(IconUtils.iconMap.keys.toList()) { iconName ->
-                            IconButton(
-                                onClick = {
-                                    selectedIconName = iconName
-                                    showIconPicker = false
-                                },
-                                modifier = Modifier
-                                    .background(
-                                        if (selectedIconName == iconName) MaterialTheme.colorScheme.primaryContainer 
-                                        else Color.Transparent,
-                                        CircleShape
-                                    )
-                            ) {
-                                Icon(
-                                    imageVector = IconUtils.getIcon(iconName),
-                                    contentDescription = null,
-                                    tint = if (selectedIconName == iconName) MaterialTheme.colorScheme.primary 
-                                           else MaterialTheme.colorScheme.onSurfaceVariant
+            dragHandle = { BottomSheetDefaults.DragHandle() }
+        ) {
+            Column(modifier = Modifier.padding(bottom = 32.dp)) {
+                Text(
+                    "Choose Icon",
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(4),
+                    contentPadding = PaddingValues(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier.height(400.dp)
+                ) {
+                    items(IconUtils.iconMap.keys.toList()) { iconName ->
+                        IconButton(
+                            onClick = {
+                                selectedIconName = iconName
+                                showIconPicker = false
+                            },
+                            modifier = Modifier
+                                .background(
+                                    if (selectedIconName == iconName) MaterialTheme.colorScheme.primaryContainer 
+                                    else Color.Transparent,
+                                    CircleShape
                                 )
-                            }
+                        ) {
+                            Icon(
+                                imageVector = IconUtils.getIcon(iconName),
+                                contentDescription = null,
+                                tint = if (selectedIconName == iconName) MaterialTheme.colorScheme.primary 
+                                       else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { showIconPicker = false }) { Text("Close") }
             }
-        )
+        }
     }
 }

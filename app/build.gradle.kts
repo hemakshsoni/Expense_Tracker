@@ -69,4 +69,6 @@ dependencies {
     implementation("androidx.room:room-ktx:2.8.4")
     implementation("androidx.navigation:navigation-compose:2.9.6")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    implementation("androidx.datastore:datastore-preferences:1.0.0")
+    implementation("com.airbnb.android:lottie-compose:6.4.0")
 }
