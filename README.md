@@ -26,21 +26,18 @@ git clone https://github.com/hemakshsoni/Expense_Tracker.git
 ## Screenshots
 ### Dark Theme:
 <p align="center">
-  <img src="images/HomeScreenDark.png" alt="Home Screen Dark 1"/>
-  <img src="images/HomeScreenDark2.png" alt="Home Screen Dark 2"/>
+  <img src="images/HomeScreenDark.png" width="40%" /> <img src="images/HomeScreenDark2.png" width="40%" />
 </p>
 
 <p align="center">
-  <img src="images/AnalyticsDark.png" alt="Analytics Dark"/>
-  <img src="images/MoreDark.png" alt = "More Screen Dark"/>
+  <img src="images/AnalyticsDark.png" width="40%" /> <img src="images/MoreDark.png" width="40%" />
 </p>
 
 ### Light Theme:
 <p align="center">
-  <img src="images/HomeScreenLight.jpeg" alt = "Home Screen Light 1"/>
-  <img src="images/HomeScreenLight2.jpeg" alt = "Home Screen Light 2"/>
+  <img src="images/HomeScreenLight.jpeg" width="40%" /> <img src="images/HomeScreenLight2.jpeg" width="40%" />
 </p>
+
 <p align="center">
-  <img src="images/AnalyticsLight.jpeg" alt = "Analytics Light"/>
-  <img src="images/MoreLight.jpeg" alt = "More Screen Light"/>
+  <img src="images/AnalyticsLight.jpeg" width="40%" /> <img src="images/MoreLight.jpeg" width="40%" />
 </p>
