@@ -3,7 +3,6 @@
 An Android-based expense tracking application that automatically extracts and categorizes financial transactions from SMS alerts, eliminating the need for manual expense entry. The app parses transaction metadata in real time and provides an intuitive interface to analyze spending trends.
 
 ## Features
-
 - Automatic transaction detection from SMS alerts
 - Real-time extraction of merchant, amount, and date
 - Category-based expense classification
@@ -12,7 +11,13 @@ An Android-based expense tracking application that automatically extracts and ca
 - Spending trend visualization
 
 ## Installation Guide
+### Direct Installation:
+1. Go to the Releases section.
+2. Download the latest APK file.
+3. Install on your Android device.
+4. Grant SMS read permissions when prompted.
 
+### Manual Installation:
 - Clone the repository:
 ```bash
 git clone https://github.com/hemakshsoni/Expense_Tracker.git
